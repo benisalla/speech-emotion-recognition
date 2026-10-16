@@ -1,0 +1,9 @@
+torch>=2.2
+librosa>=0.10
+soundfile
+scipy
+numpy
+scikit-learn
+transformers>=4.40
+matplotlib
+tqdm
