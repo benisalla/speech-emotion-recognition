@@ -24,11 +24,11 @@ def main():
 
     if not a.report_only:
         for m in a.models:
-            for s in a.seeds:
+            for s in a.seeds[:1] if m == "svm" else a.seeds:  # the SVM is deterministic: one run is enough
                 if (out / f"{m}_seed{s}.json").exists():
                     continue  # already done: makes the comparison resumable
                 print(f"\n=== {m}  seed {s} ===", flush=True)
-                subprocess.run([sys.executable, "train.py", "--model", m, "--seed", str(s),
+                subprocess.run([sys.executable, str(Path(__file__).with_name("train.py")), "--model", m, "--seed", str(s),
                                 "--data", a.data, "--out", a.out], check=True)
     report(out, a.models)
 

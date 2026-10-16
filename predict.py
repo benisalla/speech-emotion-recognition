@@ -1,6 +1,9 @@
 """Predict the emotion of one .wav file with a trained checkpoint.
 
     python predict.py path/to/clip.wav --model wavlm
+
+Needs a checkpoint from train.py (results/checkpoints/). A head trained with --backbone X
+must be used with the same --backbone X here.
 """
 import argparse
 from pathlib import Path
@@ -21,6 +24,9 @@ def main():
     p.add_argument("--ckpt-dir", default="results/checkpoints")
     a = p.parse_args()
 
+    stem = Path(a.ckpt_dir) / f"{a.model}_seed{a.seed}"
+    if not Path(f"{stem}.pt").exists():
+        raise SystemExit(f"no checkpoint at {stem}.pt - train it first: python train.py --model {a.model} --seed {a.seed}")
     kind = MODELS[a.model]["input"]
     y = load_trimmed(a.wav)
     x = {"wave": lambda: fix_length(y),
@@ -28,7 +34,6 @@ def main():
          "nb_feats": lambda: notebook_features(a.wav),
          "ssl": lambda: ssl_features(fix_length(y)[None], a.backbone)[0]}[kind]()[None]
 
-    stem = Path(a.ckpt_dir) / f"{a.model}_seed{a.seed}"
     if Path(f"{stem}_norm.npz").exists():
         norm = np.load(f"{stem}_norm.npz")
         x = (x - norm["mean"]) / norm["std"]

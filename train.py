@@ -135,7 +135,7 @@ def main():
     (out / "checkpoints").mkdir(parents=True, exist_ok=True)
     cfg = MODELS.get(a.model, dict(input="feats"))
     data, norm = get_arrays(a.data, cfg["input"], a.backbone)
-    if norm is not None:
+    if norm is not None and a.model != "svm":  # predict.py needs the scaling of torch feature models
         np.savez(out / "checkpoints" / f"{a.model}_seed{a.seed}_norm.npz", mean=norm[0], std=norm[1])
 
     t0 = time.time()
