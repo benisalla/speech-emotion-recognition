@@ -10,3 +10,4 @@ on a CPU; outputs go to `examples/output/` (gitignored). Scripts 02-05 need the 
 | [`03_overfitting_fix.py`](03_overfitting_fix.py) | same MLP with the original vs the regularised recipe: train/val gap and test accuracy | 2-3 min |
 | [`04_speaker_normalisation.py`](04_speaker_normalisation.py) | per-speaker feature normalisation removes voice identity: about +12 points for the SVM | seconds |
 | [`05_classify_samples.py`](05_classify_samples.py) | classify the sample clips with a trained checkpoint, true vs predicted emotion | seconds |
+| [`06_render_sample_videos.py`](06_render_sample_videos.py) | render each sample as a video with sound into `samples/videos/` (needs ffmpeg) | ~1 min |

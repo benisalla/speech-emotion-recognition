@@ -164,24 +164,41 @@ then `python report.py`.
 
 ## Audio samples
 
-Eight test clips, one per emotion, from actors never heard in training: [`samples/`](samples). All actors say the same
-sentence ("Kids are talking by the door"), so only *how* it is said changes. Click a file, then download it to listen.
+Eight test clips, one per emotion, from actors never heard in training ([`samples/`](samples)). All actors say the same
+sentence ("Kids are talking by the door"), so only *how* it is said changes. **Click a picture to play the clip with
+sound**: the video shows the spectrogram with a moving playhead, the true emotion and `wavlm`'s probability for each
+of the 8 emotions.
 
-| clip | true emotion | `wavlm` prediction (top-3) | |
-|---|---|---|---|
-| [01_neutral_actor21.wav](samples/01_neutral_actor21.wav) | neutral | calm 55% · neutral 31% · happy 5% | ✗ |
-| [02_calm_actor22.wav](samples/02_calm_actor22.wav) | calm | **calm 41%** · disgust 36% · sad 10% | ✓ |
-| [03_happy_actor23.wav](samples/03_happy_actor23.wav) | happy | surprised 54% · happy 15% · fearful 11% | ✗ |
-| [04_sad_actor24.wav](samples/04_sad_actor24.wav) | sad | **sad 33%** · happy 27% · disgust 25% | ✓ |
-| [05_angry_actor21.wav](samples/05_angry_actor21.wav) | angry | **angry 76%** · happy 17% · neutral 3% | ✓ |
-| [06_fearful_actor22.wav](samples/06_fearful_actor22.wav) | fearful | **fearful 75%** · happy 9% · sad 8% | ✓ |
-| [07_disgust_actor23.wav](samples/07_disgust_actor23.wav) | disgust | **disgust 92%** · surprised 3% · angry 3% | ✓ |
-| [08_surprised_actor24.wav](samples/08_surprised_actor24.wav) | surprised | **surprised 75%** · angry 10% · disgust 5% | ✓ |
+<table>
+<tr>
+<td align="center"><a href="samples/videos/01_neutral_actor21.mp4"><img src="samples/videos/01_neutral_actor21.jpg" width="400" alt="neutral: play video"></a><br>
+▶ <b>true: neutral</b> · predicted: calm 55% ❌ · <a href="samples/01_neutral_actor21.wav">wav</a></td>
+<td align="center"><a href="samples/videos/02_calm_actor22.mp4"><img src="samples/videos/02_calm_actor22.jpg" width="400" alt="calm: play video"></a><br>
+▶ <b>true: calm</b> · predicted: calm 41% ✅ · <a href="samples/02_calm_actor22.wav">wav</a></td>
+</tr>
+<tr>
+<td align="center"><a href="samples/videos/03_happy_actor23.mp4"><img src="samples/videos/03_happy_actor23.jpg" width="400" alt="happy: play video"></a><br>
+▶ <b>true: happy</b> · predicted: surprised 54% ❌ · <a href="samples/03_happy_actor23.wav">wav</a></td>
+<td align="center"><a href="samples/videos/04_sad_actor24.mp4"><img src="samples/videos/04_sad_actor24.jpg" width="400" alt="sad: play video"></a><br>
+▶ <b>true: sad</b> · predicted: sad 33% ✅ · <a href="samples/04_sad_actor24.wav">wav</a></td>
+</tr>
+<tr>
+<td align="center"><a href="samples/videos/05_angry_actor21.mp4"><img src="samples/videos/05_angry_actor21.jpg" width="400" alt="angry: play video"></a><br>
+▶ <b>true: angry</b> · predicted: angry 76% ✅ · <a href="samples/05_angry_actor21.wav">wav</a></td>
+<td align="center"><a href="samples/videos/06_fearful_actor22.mp4"><img src="samples/videos/06_fearful_actor22.jpg" width="400" alt="fearful: play video"></a><br>
+▶ <b>true: fearful</b> · predicted: fearful 75% ✅ · <a href="samples/06_fearful_actor22.wav">wav</a></td>
+</tr>
+<tr>
+<td align="center"><a href="samples/videos/07_disgust_actor23.mp4"><img src="samples/videos/07_disgust_actor23.jpg" width="400" alt="disgust: play video"></a><br>
+▶ <b>true: disgust</b> · predicted: disgust 92% ✅ · <a href="samples/07_disgust_actor23.wav">wav</a></td>
+<td align="center"><a href="samples/videos/08_surprised_actor24.mp4"><img src="samples/videos/08_surprised_actor24.jpg" width="400" alt="surprised: play video"></a><br>
+▶ <b>true: surprised</b> · predicted: surprised 75% ✅ · <a href="samples/08_surprised_actor24.wav">wav</a></td>
+</tr>
+</table>
 
-6 / 8 correct. The two mistakes are the model's most common confusions on the whole test set. Reproduce with
-`python examples/05_classify_samples.py --model wavlm`.
-
-![Log-mel spectrograms of the 8 samples](samples/spectrograms.png)
+6 / 8 correct. The two mistakes are the model's most common confusions on the whole test set: neutral heard as calm,
+happy heard as surprised. Reproduce with `python examples/05_classify_samples.py --model wavlm` (text) and
+`python examples/06_render_sample_videos.py --model wavlm` (videos).
 
 ## Figures
 
@@ -291,6 +308,7 @@ Short scripts that use the repo's modules from Python, runnable on a CPU ([`exam
 | [`03_overfitting_fix.py`](examples/03_overfitting_fix.py) | the same MLP with and without the anti-overfitting measures: train/val gap and test accuracy |
 | [`04_speaker_normalisation.py`](examples/04_speaker_normalisation.py) | per-speaker normalisation removes voice identity: about +12 points for the SVM |
 | [`05_classify_samples.py`](examples/05_classify_samples.py) | classify the sample clips with a trained checkpoint, true vs predicted emotion |
+| [`06_render_sample_videos.py`](examples/06_render_sample_videos.py) | render each sample as a video (spectrogram + playhead + predicted probabilities, with sound) |
 
 ## Repository layout
 
@@ -302,7 +320,7 @@ compare.py           runs every model × seed (resumable), then builds the repor
 report.py            results tables + figures: accuracy, training curves, confusion matrices, per-class F1, overfitting
 predict.py           inference on a single .wav file
 prepare_ravdess.py   downloads RAVDESS and makes the speaker-independent split
-samples/             8 test clips, one per emotion, with their true class and model predictions
+samples/             8 test clips, one per emotion, with their true class, model predictions and videos (samples/videos/)
 examples/            numbered runnable scripts (see above)
 results/             per-run metrics (JSON, incl. training history), RESULTS.md and the figures
 results/baseline/    the same models trained with every anti-overfitting measure off
