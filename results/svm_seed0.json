@@ -2,7 +2,8 @@
   "model": "svm",
   "input": "feats",
   "seed": 0,
-  "train_seconds": 1.1,
+  "recipe": "regularised",
+  "train_seconds": 2.7,
   "C": 30,
   "n_support_vectors": 1020,
   "val": {

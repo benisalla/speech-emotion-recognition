@@ -28,6 +28,25 @@ def label_from_path(path):
     return int(field) - 1
 
 
+def speaker_from_path(path):
+    """Actor id of an original RAVDESS name (7th field), else -1 (unknown speaker)."""
+    parts = Path(path).stem.split("-")
+    return int(parts[6]) if len(parts) == 7 else -1
+
+
+def speaker_normalise(x, speakers):
+    """Standardise features per speaker (each speaker's clips get zero mean, unit std per dimension).
+
+    Removes much of what makes one voice differ from another (pitch range, timbre, recording level), which is
+    what the models otherwise memorise. It needs several unlabelled clips of every speaker, test speakers included.
+    """
+    x = np.array(x, dtype=np.float32, copy=True)
+    for spk in np.unique(speakers):
+        m = speakers == spk
+        x[m] = (x[m] - x[m].mean(0)) / (x[m].std(0) + 1e-6)
+    return x
+
+
 def load_trimmed(path):
     y, _ = librosa.load(path, sr=SR, mono=True)
     y, _ = librosa.effects.trim(y, top_db=30)  # drop the leading/trailing silence
@@ -76,15 +95,17 @@ def _process(path):
 
 
 def load_split(data_dir, split, cache_dir="cache"):
-    """Returns dict(wave=[N, CLIP_SAMPLES], feats=[N, D], nb_feats=[N, 199], y=[N]); computed once, then cached."""
+    """Returns dict(wave=[N, CLIP_SAMPLES], feats=[N, D], nb_feats=[N, 199], y=[N], speaker=[N]);
+    computed once, then cached."""
     cache = Path(cache_dir) / f"{Path(data_dir).name}_{split}.npz"
-    if cache.exists():
-        return dict(np.load(cache))
     paths = sorted(str(p) for p in (Path(data_dir) / split).glob("*.wav"))
     assert paths, f"no .wav files in {Path(data_dir) / split}"
+    speaker = np.array([speaker_from_path(p) for p in paths])
+    if cache.exists():
+        return dict(np.load(cache), speaker=speaker)
     with ProcessPoolExecutor() as ex:
         out = list(tqdm(ex.map(_process, paths, chunksize=8), total=len(paths), desc=f"preprocess {split}"))
     wave, feats, nb_feats, y = map(np.stack, zip(*out))
     cache.parent.mkdir(parents=True, exist_ok=True)
     np.savez(cache, wave=wave, feats=feats, nb_feats=nb_feats, y=y.astype(np.int64))
-    return dict(np.load(cache))
+    return dict(np.load(cache), speaker=speaker)

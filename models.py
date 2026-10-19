@@ -38,7 +38,11 @@ def spec_augment(x, n_masks=2, max_f=8, max_t=12):
 
 
 class LogMel(nn.Module):
-    """[B, T] waveform -> [B, n_mels, frames] log-mel, per-utterance normalised (20 ms hop, 40 ms window)."""
+    """[B, T] waveform -> [B, n_mels, frames] log-mel (20 ms hop, 40 ms window).
+
+    Normalised per utterance, or, when speaker statistics spk = [B, 2, n_mels] (per-band mean and std of that
+    speaker's log-mel, see speaker_logmel_stats) are given, per speaker and per band.
+    """
 
     def __init__(self, n_mels=64, n_fft=1024, hop=320, win=640, augment=True):
         super().__init__()
@@ -50,23 +54,45 @@ class LogMel(nn.Module):
         spec = torch.stft(wave, self.n_fft, self.hop, self.win, self.window, return_complex=True).abs() ** 2
         return torch.log(self.fb @ spec + 1e-6)
 
-    def forward(self, wave):
+    def forward(self, wave, spk=None):
         x = self.log_mel(wave)
-        x = (x - x.mean(dim=(1, 2), keepdim=True)) / (x.std(dim=(1, 2), keepdim=True) + 1e-5)
+        if spk is not None:
+            x = (x - spk[:, 0, :, None]) / spk[:, 1, :, None]
+        else:
+            x = (x - x.mean(dim=(1, 2), keepdim=True)) / (x.std(dim=(1, 2), keepdim=True) + 1e-5)
         return spec_augment(x) if self.training and self.augment else x
 
 
 class MFCC(LogMel):
-    """[B, T] -> [B, n_mfcc, frames]: DCT of the log-mel, then per-coefficient mean/variance norm."""
+    """[B, T] -> [B, n_mfcc, frames]: DCT of the log-mel, then per-coefficient mean/variance norm
+    (or DCT of the speaker-normalised log-mel when speaker statistics are given)."""
 
     def __init__(self, n_mfcc=40, n_mels=64, **kw):
         super().__init__(n_mels=n_mels, **kw)
         self.register_buffer("dct", torch.tensor(scipy.fft.dct(np.eye(n_mels), norm="ortho", axis=0)[:n_mfcc], dtype=torch.float32))
 
-    def forward(self, wave):
-        x = self.dct @ self.log_mel(wave)
-        x = (x - x.mean(dim=2, keepdim=True)) / (x.std(dim=2, keepdim=True) + 1e-5)
+    def forward(self, wave, spk=None):
+        if spk is not None:
+            x = self.dct @ ((self.log_mel(wave) - spk[:, 0, :, None]) / spk[:, 1, :, None])
+        else:
+            x = self.dct @ self.log_mel(wave)
+            x = (x - x.mean(dim=2, keepdim=True)) / (x.std(dim=2, keepdim=True) + 1e-5)
         return spec_augment(x, max_f=4) if self.training and self.augment else x
+
+
+@torch.no_grad()
+def speaker_logmel_stats(waves, speakers, batch_size=64):
+    """Per-band mean and std of each speaker's log-mel over all their clips (padding frames excluded).
+    Returns [N, 2, n_mels]: row i holds the statistics of clip i's speaker."""
+    lm = LogMel()
+    mels = torch.cat([lm.log_mel(torch.as_tensor(waves[i:i + batch_size])) for i in range(0, len(waves), batch_size)])
+    voiced = mels.amax(dim=1) > np.log(1e-6) + 1  # [N, frames]: False on the zero padding
+    out = np.zeros((len(waves), 2, mels.shape[1]), dtype=np.float32)
+    for spk in np.unique(speakers):
+        m = speakers == spk
+        frames = mels[torch.as_tensor(m)].transpose(1, 2)[voiced[torch.as_tensor(m)]]  # [n_frames, n_mels]
+        out[m] = torch.stack([frames.mean(0), frames.std(0) + 1e-5]).numpy()
+    return out
 
 
 # ---------------------------------------------------------------- shared pieces
@@ -120,11 +146,11 @@ class NotebookFNN(nn.Module):
 
 
 class MLP(nn.Module):
-    """The notebook's FNN on pooled handcrafted features, with BatchNorm + dropout so it doesn't overfit."""
+    """The notebook's FNN on pooled handcrafted features, with input dropout, BatchNorm + dropout so it doesn't overfit."""
 
-    def __init__(self, in_dim, hidden=(512, 256), p=0.4):
+    def __init__(self, in_dim, hidden=(256, 128), p=0.5, p_in=0.2):
         super().__init__()
-        layers, d = [], in_dim
+        layers, d = [nn.Dropout(p_in)], in_dim
         for h in hidden:
             layers += [nn.Linear(d, h), nn.BatchNorm1d(h), nn.ReLU(), nn.Dropout(p)]
             d = h
@@ -162,8 +188,8 @@ class MFCCCNN(nn.Module):
                                  conv1d_block(128, 128, 3, pool=1))
         self.head = head(2 * 128)
 
-    def forward(self, wave):
-        return self.head(mean_max_pool(self.net(self.frontend(wave))))
+    def forward(self, wave, spk=None):
+        return self.head(mean_max_pool(self.net(self.frontend(wave, spk))))
 
 
 class MelCNN(nn.Module):
@@ -179,8 +205,8 @@ class MelCNN(nn.Module):
         self.net = nn.Sequential(*blocks)
         self.head = head(2 * cin)
 
-    def forward(self, wave):
-        x = self.net(self.frontend(wave).unsqueeze(1))  # [B, C, F', T']
+    def forward(self, wave, spk=None):
+        x = self.net(self.frontend(wave, spk).unsqueeze(1))  # [B, C, F', T']
         return self.head(mean_max_pool(x.mean(dim=2)))   # average over frequency, pool over time
 
 
@@ -196,8 +222,8 @@ class CRNN(nn.Module):
         self.pool = AttentionPool(2 * rnn_dim)
         self.head = head(2 * rnn_dim)
 
-    def forward(self, wave):
-        x = self.cnn(self.frontend(wave).unsqueeze(1))   # [B, C, F', T']
+    def forward(self, wave, spk=None):
+        x = self.cnn(self.frontend(wave, spk).unsqueeze(1))   # [B, C, F', T']
         x = x.flatten(1, 2).transpose(1, 2)              # [B, T', C*F']
         x, _ = self.rnn(F.relu(self.proj(x)))
         return self.head(self.pool(x))
@@ -210,13 +236,14 @@ class SSLHead(nn.Module):
     A softmax-weighted sum over layers lets the model pick which layers carry emotion (SUPERB-style).
     """
 
-    def __init__(self, n_layers, dim):
+    def __init__(self, n_layers, dim, hidden=128, p=0.5, p_in=0.2):
         super().__init__()
         self.layer_logits = nn.Parameter(torch.zeros(n_layers))
-        self.head = head(dim, hidden=256, p=0.4)
+        self.drop_in = nn.Dropout(p_in)  # drops whole input features: the head cannot rely on a few dimensions
+        self.head = head(dim, hidden=hidden, p=p)
 
     def forward(self, x):
-        return self.head((torch.softmax(self.layer_logits, 0)[None, :, None] * x).sum(dim=1))
+        return self.head(self.drop_in((torch.softmax(self.layer_logits, 0)[None, :, None] * x).sum(dim=1)))
 
 
 @torch.no_grad()
@@ -238,12 +265,31 @@ def ssl_features(waves, backbone="microsoft/wavlm-base-plus", batch_size=8):
 
 # input: which array the model consumes
 #   "nb_feats" = notebook features, "feats" = handcrafted, "wave" = raw audio, "ssl" = pretrained states
+# anti-overfitting knobs (see train.py): wd = AdamW weight decay, mixup = Beta(a, a) mixup alpha (0 = off),
+#   noise = Gaussian noise std added to standardised feature vectors, ema = weight-averaging decay (0 = off),
+#   speed = speed/pitch perturbation of the waveform (waveform models only).
+#   notebook_fnn keeps the original recipe (no extra regularisation) so it stays a faithful baseline.
+REG = dict(wd=0.05, mixup=0.4, noise=0.2, ema=0.995, speed=False)          # feature-vector models
+SPEC = dict(wd=0.05, mixup=0.0, noise=0.0, ema=0.995, speed=True)          # spectrogram CNNs: perturb the voice instead
 MODELS = {
-    "notebook_fnn": dict(input="nb_feats", build=lambda shape: NotebookFNN(shape[-1]), lr=1e-4, epochs=300, patience=40),
-    "mlp":          dict(input="feats", build=lambda shape: MLP(shape[-1]),            lr=1e-3, epochs=300, patience=40),
-    "wave_cnn":     dict(input="wave",  build=lambda shape: WaveCNN(),                 lr=3e-3, epochs=40,  patience=15),
-    "mfcc_cnn":     dict(input="wave",  build=lambda shape: MFCCCNN(),                 lr=3e-3, epochs=40,  patience=15),
-    "mel_cnn":      dict(input="wave",  build=lambda shape: MelCNN(),                  lr=3e-3, epochs=40,  patience=15),
-    "crnn":         dict(input="wave",  build=lambda shape: CRNN(),                    lr=2e-3, epochs=40,  patience=15),
-    "wavlm":        dict(input="ssl",   build=lambda shape: SSLHead(*shape[-2:]),      lr=1e-3, epochs=200, patience=40),
+    "notebook_fnn": dict(input="nb_feats", build=lambda shape: NotebookFNN(shape[-1]), lr=1e-4, epochs=300, patience=40,
+                         wd=1e-2, mixup=0.0, noise=0.0, ema=0.0, speed=False),
+    "mlp":      dict(input="feats", build=lambda shape: MLP(shape[-1]),       lr=1e-3, epochs=300, patience=40, **REG),
+    # wave_cnn is limited by fitting, not overfitting (train acc ~80 %), so: longer schedule, no extra regularisation
+    "wave_cnn": dict(input="wave",  build=lambda shape: WaveCNN(),            lr=3e-3, epochs=80,  patience=25,
+                     wd=1e-2, mixup=0.0, noise=0.0, ema=0.0, speed=False),
+    "mfcc_cnn": dict(input="wave",  build=lambda shape: MFCCCNN(),            lr=3e-3, epochs=60,  patience=20, **SPEC),
+    "mel_cnn":  dict(input="wave",  build=lambda shape: MelCNN(),             lr=3e-3, epochs=60,  patience=20, **SPEC),
+    "crnn":     dict(input="wave",  build=lambda shape: CRNN(),               lr=2e-3, epochs=60,  patience=20, **SPEC),
+    "wavlm":    dict(input="ssl",   build=lambda shape: SSLHead(*shape[-2:]), lr=1e-3, epochs=200, patience=40, **REG),
 }
+
+# models that support per-speaker normalisation (train.py --speaker-norm): feature vectors, or the log-mel front-end
+SPEAKER_NORM = ("svm", "mlp", "mfcc_cnn", "mel_cnn", "crnn", "wavlm")
+
+# The same models and schedules with every anti-overfitting measure switched off, for the before/after comparison:
+#   python train.py --model mlp --baseline
+_OLD = dict(wd=1e-2, mixup=0.0, noise=0.0, ema=0.0, speed=False)
+BASELINE = {name: cfg | _OLD for name, cfg in MODELS.items()}
+BASELINE["mlp"]["build"] = lambda shape: MLP(shape[-1], hidden=(512, 256), p=0.4, p_in=0.0)
+BASELINE["wavlm"]["build"] = lambda shape: SSLHead(*shape[-2:], hidden=256, p=0.4, p_in=0.0)

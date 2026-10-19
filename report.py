@@ -7,6 +7,7 @@ Figures:
     training_curves.png       train vs val loss and accuracy per epoch, for every neural model
     confusion_matrices.png    row-normalised test confusion matrix of every model
     per_class_f1.png          test F1 per emotion x model
+    overfitting.png           with vs without anti-overfitting measures: train-test gap, test accuracy (results/baseline/)
 """
 import json
 from pathlib import Path
@@ -17,9 +18,11 @@ import numpy as np
 from data import EMOTIONS
 
 ALL = ["notebook_fnn", "svm", "mlp", "wave_cnn", "mfcc_cnn", "mel_cnn", "crnn", "wavlm"]
+SPK = ["svm_spk", "mlp_spk", "mfcc_cnn_spk", "mel_cnn_spk", "crnn_spk", "wavlm_spk"]  # train.py --speaker-norm
 INPUT = {"notebook_fnn": "notebook features (199-d)", "svm": "handcrafted features", "mlp": "handcrafted features",
          "wave_cnn": "raw waveform", "mfcc_cnn": "MFCC sequence", "mel_cnn": "log-mel spectrogram",
          "crnn": "log-mel spectrogram", "wavlm": "frozen WavLM states"}
+INPUT |= {m: f"{INPUT[m.removesuffix('_spk')]}, speaker-normalised" for m in SPK}
 
 BLUE, ORANGE = "#2a78d6", "#eb6834"                 # series 1 / series 2
 INK, INK2, MUTED, GRID = "#0b0b0b", "#52514e", "#898781", "#e1e0d9"
@@ -107,13 +110,13 @@ def plot_training_curves(rows, path):
         ax_loss.set_ylabel(r["model"], color=INK, fontsize=9)
         ax_acc.set_ylim(0, 1)
     axes[0, 0].set_title("loss (label-smoothed cross-entropy)", loc="left")
-    axes[0, 1].set_title("accuracy", loc="left")
+    axes[0, 1].set_title("accuracy (train: clean clips, eval mode)", loc="left")
     axes[0, 1].legend(loc="lower right", ncol=2)
     for ax in axes[-1]:
         ax.set_xlabel("epoch")
     fig.suptitle("Training curves: mean over seeds, band = min/max, dotted = best val epoch (checkpoint kept)",
                  x=0.01, ha="left", fontsize=9, color=INK2)
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 1, 1 - 0.45 / fig.get_figheight()))
     fig.savefig(path, dpi=150)
     plt.close(fig)
 
@@ -175,12 +178,86 @@ def plot_per_class_f1(rows, path):
     plt.close(fig)
 
 
+def _at_best(run, key):
+    return run["history"][run["best_epoch"]][key] * 100
+
+
+def overfitting_rows(out, models):
+    """Per model, no regularisation (results/baseline) vs regularised (+ speaker-normalised when it exists):
+    clean train acc, val acc and test acc at the kept checkpoint, mean over seeds."""
+    rows = []
+    for m in models:
+        row = dict(model=m)
+        for recipe, folder, name in (("baseline", Path(out) / "baseline", m), ("regularised", Path(out), m),
+                                     ("speaker_norm", Path(out), f"{m}_spk")):
+            runs = [json.loads(p.read_text()) for p in sorted(folder.glob(f"{name}_seed*.json"))]
+            if runs and "history" in runs[0]:  # the SVM has no epochs
+                row[recipe] = {k: np.mean([_at_best(r, f"{k}_acc") for r in runs]) for k in ("train", "val")}
+                row[recipe]["test"] = np.mean([r["test"]["acc"] * 100 for r in runs])
+        if "baseline" in row and "regularised" in row:
+            rows.append(row)
+    return rows
+
+
+RECIPES = (("baseline", "no regularisation", MUTED), ("regularised", "regularised", BLUE),
+           ("speaker_norm", "regularised + speaker norm", ORANGE))
+
+
+def overfitting_table(rows):
+    lines = ["| model | recipe | train acc | val acc | test acc | gap (train - test) |", "|---|---|---|---|---|---|"]
+    for r in rows:
+        for recipe, name, _ in RECIPES:
+            if recipe not in r:
+                continue
+            d = r[recipe]
+            lines.append(f"| `{r['model']}` | {name} | {d['train']:.1f} % | {d['val']:.1f} % | {d['test']:.1f} % "
+                         f"| {d['train'] - d['test']:.1f} |")
+    return "\n".join(lines)
+
+
+def plot_overfitting(rows, path):
+    fig, (ax_gap, ax_test) = plt.subplots(1, 2, figsize=(10, 0.75 * len(rows) + 1.6), sharey=True)
+    y = np.arange(len(rows))
+    for off, (recipe, label, color) in zip((-0.27, 0, 0.27), RECIPES):
+        sub = [(yi, r[recipe]) for yi, r in zip(y, rows) if recipe in r]
+        if not sub:
+            continue
+        ys = np.array([yi for yi, _ in sub]) + off
+        gap = [d["train"] - d["test"] for _, d in sub]
+        test = [d["test"] for _, d in sub]
+        ax_gap.barh(ys, gap, 0.26, color=color, label=label)
+        ax_test.barh(ys, test, 0.26, color=color, label=label)
+        for yi, g, t in zip(ys, gap, test):
+            ax_gap.text(g + 0.5, yi, f"{g:.0f}", va="center", fontsize=7.5, color=INK2)
+            ax_test.text(t + 0.5, yi, f"{t:.1f}", va="center", fontsize=7.5, color=INK2)
+    ax_gap.set_yticks(y, [r["model"] for r in rows])
+    ax_gap.invert_yaxis()
+    for ax in (ax_gap, ax_test):
+        ax.grid(axis="y", visible=False)
+    ax_gap.set_title("overfitting gap: train acc - test acc (points)", loc="left")
+    ax_test.set_title("test accuracy on unseen actors (%)", loc="left")
+    ax_test.set_xlim(0, 100)
+    fig.legend(*ax_test.get_legend_handles_labels(), loc="upper left", bbox_to_anchor=(0.01, 0.955), ncol=3, fontsize=7.5)
+    fig.suptitle("Without vs with anti-overfitting measures, same schedule (mean over seeds; train acc on clean clips)",
+                 x=0.01, ha="left", fontsize=9, color=INK2)
+    fig.tight_layout(rect=(0, 0, 1, 0.92))
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
 def report(out="results", models=ALL):
     out = Path(out)
     rows = load(out, models)
     md = table(rows)
-    (out / "RESULTS.md").write_text("# Results\n\nTest-set scores, mean ± sample std over seeds (generated by `report.py`).\n\n" + md + "\n")
+    text = "# Results\n\nTest-set scores, mean ± sample std over seeds (generated by `report.py`).\n\n" + md + "\n"
     print(md)
+    over = overfitting_rows(out, models)
+    if over:
+        om = overfitting_table(over)
+        text += "\n## Overfitting: without vs with the anti-overfitting measures\n\n" + om + "\n"
+        print(om)
+        plot_overfitting(over, out / "overfitting.png")
+    (out / "RESULTS.md").write_text(text)
     plot_comparison(rows, out / "accuracy_comparison.png")
     plot_training_curves(rows, out / "training_curves.png")
     plot_confusions(rows, out / "confusion_matrices.png")
@@ -188,4 +265,4 @@ def report(out="results", models=ALL):
 
 
 if __name__ == "__main__":
-    report()
+    report(models=ALL + SPK)
